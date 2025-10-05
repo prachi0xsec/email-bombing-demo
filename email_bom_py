@@ -31,7 +31,7 @@ def is_host_allowed(target_url):
 def get_args():
     p = argparse.ArgumentParser(description="Safe authorized test: send repeated forgot-password requests.")
     p.add_argument("--url", required=True, help="Full forgot-password URL (e.g. http://localhost:5000/forgot-password)")
-    p.add_argument("--email", required=False, default="kambleprachi354@gmail.com", help="Target email to use in requests")
+    p.add_argument("--email", required=False, default="target@gmail.com", help="Target email to use in requests")
     p.add_argument("--max", type=int, default=MAX_REQUESTS, help=f"Max requests to send (default {MAX_REQUESTS})")
     p.add_argument("--burp", action="store_true", help="Route requests through Burp at 127.0.0.1:8080")
     p.add_argument("--json-body", action="store_true", help="Send email as JSON body {\"email\":...} (default sends form data)")
