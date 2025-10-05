@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""
+email_bom_py
+Safe automation for authorized testing only.
+
+Behavior:
+- Sends up to `max_requests` requests to the provided forgot-password URL with the provided email.
+- Stops immediately if any response status code is 429 or 403.
+- Generates a Markdown report ONLY if no 429 or 403 was observed during the run.
+- Default allowed hosts include localhost; for other hosts you must pass --confirm and type the exact phrase I_HAVE_AUTHORIZATION.
+"""
+
+import sys
+import argparse
+import time
+import requests
+from urllib.parse import urlparse
+import datetime
+import json
+
+MAX_REQUESTS = 30
+BURP_PROXY = "http://127.0.0.1:8080"
+ALLOWED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "example.test"}
+CONFIRMATION_PHRASE = "I_HAVE_AUTHORIZATION"
+
+def is_host_allowed(target_url):
+    parsed = urlparse(target_url)
+    host = parsed.hostname
+    return (host in ALLOWED_HOSTS)
+
+def get_args():
+    p = argparse.ArgumentParser(description="Safe authorized test: send repeated forgot-password requests.")
+    p.add_argument("--url", required=True, help="Full forgot-password URL (e.g. http://localhost:5000/forgot-password)")
+    p.add_argument("--email", required=False, default="kambleprachi354@gmail.com", help="Target email to use in requests")
+    p.add_argument("--max", type=int, default=MAX_REQUESTS, help=f"Max requests to send (default {MAX_REQUESTS})")
+    p.add_argument("--burp", action="store_true", help="Route requests through Burp at 127.0.0.1:8080")
+    p.add_argument("--json-body", action="store_true", help="Send email as JSON body {\"email\":...} (default sends form data)")
+    p.add_argument("--confirm", action="store_true", help="Interactive confirmation required if target not in allowlist")
+    return p.parse_args()
+
+def interactive_confirm(url):
+    print("ATTENTION: You are about to run automated requests.")
+    print("Only proceed if you have EXPLICIT WRITTEN AUTHORIZATION to test the target.")
+    print(f"Target URL: {url}")
+    print("Type the confirmation phrase to continue:")
+    print(f"  {CONFIRMATION_PHRASE}")
+    s = input("Type phrase (case sensitive): ").strip()
+    return s == CONFIRMATION_PHRASE
+
+def build_proxies(use_burp):
+    if use_burp:
+        return {"http": BURP_PROXY, "https": BURP_PROXY}
+    return None
+
+def make_request(session, url, email, json_body=False):
+    headers = {"User-Agent": "email_bom_py/1.0 (authorized-testing-only)"}
+    if json_body:
+        data = json.dumps({"email": email})
+        headers["Content-Type"] = "application/json"
+        resp = session.post(url, data=data, headers=headers, timeout=15)
+    else:
+        # standard form POST
+        resp = session.post(url, data={"email": email}, headers=headers, timeout=15)
+    return resp
+
+def generate_report(results, url, email, out_file="report.md"):
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    lines = []
+    lines.append(f"# Email Bombing Test Report (Automated) — {now}\n")
+    lines.append("**WARNING**: Only valid if test was performed under authorized scope.\n")
+    lines.append(f"- Target URL: `{url}`")
+    lines.append(f"- Target email: `{email}`")
+    lines.append(f"- Number of attempts: {len(results)}\n")
+    lines.append("## Summary of Attempts\n")
+    lines.append("| # | Timestamp (UTC) | HTTP Status | Notes |")
+    lines.append("|---|----------------|-------------|-------|")
+    for i, r in enumerate(results, start=1):
+        ts = r["timestamp"]
+        status = r["status"]
+        notes = r.get("notes","")
+        lines.append(f"| {i} | {ts} | {status} | {notes} |")
+    lines.append("\n## Conclusion\nNo 429 or 403 responses were observed during this run.")
+    with open(out_file, "w") as f:
+        f.write("\n".join(lines))
+    print(f"[+] Report written to {out_file}")
+
+def main():
+    args = get_args()
+    url = args.url
+    email = args.email
+    max_requests = args.max
+    use_burp = args.burp
+    json_body = args.json_body
+
+    # Safety gate
+    if is_host_allowed(url):
+        print("[*] Target host is in allowlist. Proceeding.")
+        confirmed = True
+    else:
+        confirmed = False
+        if args.confirm:
+            confirmed = interactive_confirm(url)
+        else:
+            print("!! Target host is NOT in the allowlist.")
+            print("If you have permission, re-run with --confirm to type the confirmation phrase.")
+            print("Allowed hosts by default:", ", ".join(sorted(ALLOWED_HOSTS)))
+            print("Aborting.")
+            sys.exit(1)
+
+    if not confirmed:
+        print("Confirmation failed. Aborting.")
+        sys.exit(1)
+
+    proxies = build_proxies(use_burp)
+    session = requests.Session()
+    if proxies:
+        session.proxies.update(proxies)
+        session.verify = False  # if Burp uses HTTPS interception, this avoids cert errors for testing (only in lab)
+
+    results = []
+    blocked = False
+    print(f"[*] Starting up to {max_requests} attempts against {url} with email {email}")
+    for i in range(1, max_requests+1):
+        print(f"Attempt {i} ...", end=" ", flush=True)
+        try:
+            resp = make_request(session, url, email, json_body=json_body)
+            status = resp.status_code
+            results.append({
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "status": status,
+                "notes": ""
+            })
+            print(f"HTTP {status}")
+            if status in (429, 403):
+                print(f"[!] Received {status}. Stopping further attempts.")
+                results[-1]["notes"] = f"Stopped on {status}"
+                blocked = True
+                break
+            # small delay to be respectful — configurable
+            time.sleep(0.5)
+        except requests.RequestException as e:
+            print(f"ERROR: {e}")
+            results.append({
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "status": "error",
+                "notes": str(e)
+            })
+            # decide whether to continue on network errors; here we stop
+            blocked = True
+            break
+
+    # ONLY generate a full report if we did NOT see a blocking status (429/403)
+    if blocked:
+        print("[!] A 429/403 or network error was observed. Skipping report generation as requested.")
+        # Optionally, you can write a brief log file with minimal info (but per your request we will not create report.md)
+    else:
+        generate_report(results, url, email)
+
+    print("[*] Done.")
+
+if __name__ == "__main__":
+    main()
