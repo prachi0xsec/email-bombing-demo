@@ -6,7 +6,6 @@ This repository demonstrates a safe, local VAPT workflow for testing "email-bomb
 
 ## Contents
 - `email_bom_py` — automation script: sends up to N password-reset requests, stops on HTTP 429/403, and (by default) only writes a full `report.md` if no 429/403 was observed.
-- `demo_app.py` — simple forgot-password demo (no real emails sent).
 - `demo_app_token.py` — token-in-URL demo to emulate `tbtoken` style flows.
 - `report_sample.md` — sanitized sample report from a local demo run.
 - `requirements.txt` — Python dependencies.(Flask, requests, beautifulsoup4 if used)
